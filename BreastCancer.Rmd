@@ -1,0 +1,471 @@
+---
+title: "Final Project Report"
+author: "Jonathan Monteiro"
+date: "05/09/2020"
+output: html_document
+---
+
+```{r}
+#Load libraries and data from csv file
+
+library(readr)
+library(GGally)
+library(ggplot2)
+library(readr)
+library(MASS)
+library(corrplot)
+library(factoextra)
+library('e1071')
+library(leaps)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(plyr)
+library(dplyr)
+library(repr)
+library(plsdepot)
+library('splines')
+library(gam)
+```
+
+```{r}
+#Reshape data prior to analysis
+
+cancerfile <- read.csv("data.csv")
+cancerfile$diagnosis <-ifelse(cancerfile$diagnosis=='M',1,0)
+cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
+cancerfile$X <- NULL
+cancerfile$id <- NULL
+cancerfile$diagnosis <- NULL
+```
+
+```{r}
+#Split data into training and testing sets for ML models
+
+set.seed(344)
+
+trainingRowIndex <- sample(1:nrow(cancerfile), 0.8*nrow(cancerfile))
+trainingData <- cancerfile[trainingRowIndex, ] 
+testData  <- cancerfile[-trainingRowIndex, ]  
+```
+
+```{r}
+## No high leverage or missing points were found within the data set.
+```
+
+```{r}
+## i. Standard linear model.
+
+linearmodel <- lm(radius_mean ~ perimeter_mean + smoothness_mean , data=trainingData)
+
+plot(linearmodel)
+summary(linearmodel) 
+
+mean((testData$radius_mean - predict(linearmodel,testData))^2)
+mean((trainingData$radius_mean - predict(linearmodel,trainingData))^2)
+```
+
+
+```{r}
+#ii. Best subset selection
+set.seed(344)
+
+num_vars = ncol(trainingData) - 1
+
+trn_idx = sample(c(TRUE, FALSE), nrow(cancerfile), rep = TRUE)
+tst_idx = (!trn_idx)
+
+fit_all = regsubsets(radius_mean ~ ., data = cancerfile[trn_idx, ], nvmax = num_vars)
+
+test_mat = model.matrix(radius_mean ~ ., data = cancerfile[tst_idx, ])
+
+test_err = rep(0, times = num_vars)
+for (i in seq_along(test_err)) {
+  coefs = coef(fit_all, id = i)
+  pred = test_mat[, names(coefs)] %*% coefs
+  test_err[i] <- sqrt(mean((cancerfile$radius_mean[tst_idx] - pred) ^ 2))
+}
+coef(fit_all, 17)
+
+which.min(test_err)
+
+plot(test_err, type='b', ylab = "Test Set RMSE", xlab = "Number of Predictors")
+
+```
+
+```{r}
+
+#iii. Lasso. 
+
+eval_results <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  R_square <- 1 - SSE / SST
+  RMSE = sqrt(SSE/nrow(df))
+    # Model performance metrics
+data.frame(
+  RMSE = RMSE,
+  Rsquare = R_square
+)
+  
+}
+set.seed(344)
+cancerfile <- read.csv("data.csv")
+#Reshape data prior to analysis
+
+cancerfile$diagnosis <- NULL
+cancerfile$X <- NULL
+cancerfile$id <- NULL
+
+x = model.matrix(radius_mean~., cancerfile)[,-1] 
+                                         
+y <- cancerfile %>%
+  select(radius_mean) %>%
+  unlist() %>%
+  as.numeric()
+
+grid = 10^seq(10, -2, length = 100)
+
+train = cancerfile %>%
+  sample_frac(0.5)
+
+test = cancerfile %>%
+  setdiff(train)
+
+x_train = model.matrix(radius_mean~., train)[,-1]
+x_test = model.matrix(radius_mean~., test)[,-1]
+
+y_train = train %>%
+  select(radius_mean) %>%
+  unlist() %>%
+  as.numeric()
+
+y_test = test %>%
+  select(radius_mean) %>%
+  unlist() %>%
+  as.numeric()
+
+
+lasso_mod = glmnet(x_train, 
+                   y_train, 
+                   alpha = 1, 
+                   lambda = grid)
+
+cv.lasso = cv.glmnet(x_train, y_train, alpha = 1) 
+
+# Plot training data MSE as function of lambda
+
+best.lam = cv.lasso$lambda.min
+
+lasso.coef  <- predict(lasso_mod, type = 'coefficients', s = best.lam)[1:29,]
+ 
+lasso.coef
+
+lasso_pred = predict(lasso_mod, s = best.lam, newx = x_test) 
+(eval_results(y_test, lasso_pred, testData)$RMSE)^2
+```
+
+```{r}
+#iv. Partial Least Squares
+
+set.seed(344)
+cancerfile <- read.csv("data.csv")
+cancerfile$diagnosis <-ifelse(cancerfile$diagnosis=='M',1,0)
+cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
+cancerfile$X <- NULL
+cancerfile$id <- NULL
+cancerfile$diagnosis <- NULL
+
+trainingRowIndex <- sample(1:nrow(cancerfile), 0.8*nrow(cancerfile))
+trainingData <- cancerfile[trainingRowIndex, ] 
+testData  <- cancerfile[-trainingRowIndex, ]  
+
+
+cv_model_pls <- train(
+  radius_mean ~ ., 
+  data = trainingData, 
+  method = "pls",
+  preProcess = c("zv", "center", "scale"),
+  tuneLength = 30
+)
+```
+
+```{r}
+cv_model_pls$results %>%
+  dplyr::filter(ncomp == pull(cv_model_pls$bestTune))
+```
+
+```{r}
+#v. Polynomial
+
+fit <- lm(radius_mean∼poly(radius_mean+smoothness_mean ,3), data=trainingData)
+
+coef(fit)
+
+mean((testData$radius_mean - predict(fit,testData))^2)
+
+plot(fit)
+```
+
+```{r}
+#vi. Natural cubic spline (either state the degree of freedom or knots.) (Chapter 7)
+
+p.range <- range(cancerfile$perimeter_mean)
+p.grid=seq(from=p.range[1],to=p.range[2])
+
+naturalfit <- lm(radius_mean ~ bs(perimeter_mean, knots = c(75, 120, 160)), data=cancerfile)
+
+coef(naturalfit)
+
+mean((testData$radius_mean - predict(naturalfit,testData))^2)
+
+plot(cancerfile$perimeter_mean,cancerfile$radius_mean,col="grey",xlab="Perimeter Mean",ylab="Radius Mean")
+points(p.range, predict(naturalfit,newdata = list(perimeter_mean=p.range)),col="darkgreen",lwd=2,type="l")
+#adding cutpoints
+abline(v=c(75,120, 160),lty=2,col="darkgreen")
+```
+
+
+```{r}
+#Smooth Spline 
+
+
+naturalfit2<-smooth.spline(cancerfile$perimeter_mean, cancerfile$radius_mean,df=8) 
+
+predict(naturalfit2,testData)
+
+plot(cancerfile$perimeter_mean, cancerfile$radius_mean,col="grey",xlab="Perimeter Mean",ylab="Radius Mean")
+points(p.range,predict(naturalfit,newdata = list(perimeter_mean=p.range)),col="darkgreen",lwd=2,type="l")
+
+
+abline(v=c(75,120, 160),lty=2,col="darkgreen")
+lines(naturalfit2,col="red",lwd=2)
+
+lines(p.grid,predict (loefit,data.frame(perimeter_mean=p.grid)), col="red",lwd=2) 
+
+lines(p.grid ,predict (loefit2,data.frame(perimeter_mean=p.grid)), col="blue",lwd=2) 
+
+
+```
+
+
+```{r}
+#viii. Local Regression. (Chapter 7)
+
+plot(cancerfile$perimeter_mean, cancerfile$radius_mean,xlim=p.range ,cex=.5,col="darkgrey ",xlab="Perimeter Mean", ylab = "Radius Mean") 
+title("Local Regression ") 
+
+summary(loefit)
+
+loefit=loess(radius_mean∼perimeter_mean,span=.2,data=cancerfile) 
+
+loefit2=loess(radius_mean∼perimeter_mean,span=.5,data=cancerfile) 
+
+lines(p.grid,predict (loefit,data.frame(perimeter_mean=p.grid)), col="red",lwd=2) 
+
+lines(p.grid ,predict (loefit2,data.frame(perimeter_mean=p.grid)), col="blue",lwd=2) 
+```
+
+```{r}
+#ix. Generalized Additive Model. (Chapter 7)
+
+gam.m1 =gam(radius_mean∼s(perimeter_mean,4)+s(smoothness_mean,5)+fractal_dimension_se,data=cancerfile)
+gam.m2 =gam(radius_mean∼perimeter_mean+s(smoothness_mean,5)+fractal_dimension_se,data=cancerfile)
+gam.m3 =gam(radius_mean∼s(perimeter_mean,5)+smoothness_mean,data=cancerfile)
+gam.m4 =gam(radius_mean∼s(perimeter_mean,4)+s(smoothness_mean,5),data=cancerfile)
+
+gam.m3
+predictions <- gam.m3 %>% predict(testData)
+
+plot(gam.m3, se=TRUE , col="green")
+RMSE = RMSE(predictions, testData$radius_mean)
+RMSE^2
+```
+
+#Qualitative
+
+```{r, warning=FALSE}
+cancerfile <- read.csv("data.csv")
+cancerfile$diagnosis <-ifelse(cancerfile$diagnosis=='M',1,0)
+cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
+cancerfile$X <- NULL
+cancerfile$id <- NULL
+```
+
+```{r}
+#Split data into training and testing sets for ML models
+
+set.seed(344)
+
+trainingRowIndex <- sample(1:nrow(cancerfile), 0.8*nrow(cancerfile))
+trainingData <- cancerfile[trainingRowIndex, ] 
+testData  <- cancerfile[-trainingRowIndex, ] 
+
+```
+
+```{r, warning=FALSE}
+#i. Logistic Regression
+set.seed(344)
+
+logisticmod <- glm(diagnosis ~ radius_mean + perimeter_mean + area_se + compactness_se + concave.points_se + radius_worst + texture_worst + concavity_worst + fractal_dimension_worst, family=binomial,data=trainingData,maxit = 100)
+
+summary(logisticmod)
+
+log_prediction <- predict(logisticmod,testData,type="response")
+
+t <- table(testData$diagnosis,log_prediction>0.2,dnn = c('Logistic',' '))
+ 
+boot::cv.glm(trainingData, logisticmod, K = 10)$delta[1]
+
+```
+```{r}
+t[4]/(t[3]+t[4])
+t[2]/(t[1]+t[2])
+t[1]/(t[1]+t[2])
+t[3]/(t[3]+t[4])
+```
+
+```{r}
+#ii. Train linear discriminant model
+
+discriminantmod <- lda(diagnosis ~ concave.points_worst + concavity_mean + concavity_worst + perimeter_worst + area_worst, data=trainingData)
+
+lda_prediction <- predict(discriminantmod,testData)$class
+
+t <- table(lda_prediction,testData$diagnosis)
+
+lda.pred = predict(discriminantmod, testData)
+mean(lda.pred$class != testData$diagnosis)
+```
+
+```{r}
+#iii. Quadratic Discriminant Analysis
+cancer.qda <- qda(diagnosis ~., data = trainingData)
+
+cancer.pred <- predict(cancer.qda, testData)$class
+t <- table(cancer.pred, testData$diagnosis, dnn = c('QDA Prediction',' '))
+
+qda.pred = predict(cancer.qda, testData)
+mean(qda.pred$class != testData$diagnosis)
+```
+
+```{r}
+#iv. Bagging
+
+Bag <- randomForest(diagnosis~.,data=trainingData,mtry=13,importance=TRUE)
+
+f <- varImpPlot(Bag)
+f
+```
+
+```{r}
+bagg.classTest <-  predict(train.bagg, 
+                         newdata = testData,
+                          type="raw")
+confusionMatrix(testData$diagnosis,bagg.classTest,dnn=c("Bagging",""))
+```
+
+```{r}
+library(dplyr)
+library('ggraph')
+library('igraph')
+
+tree_func <- function(final_model, 
+                      tree_num) {
+  
+  # get tree by index
+  tree <- randomForest::getTree(final_model, 
+                                k = tree_num, 
+                                labelVar = TRUE) %>%
+    tibble::rownames_to_column() %>%
+    # make leaf split points to NA, so the 0s won't get plotted
+    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
+  
+  # prepare data frame for graph
+  graph_frame <- data.frame(from = rep(tree$rowname, 2),
+                            to = c(tree$`left daughter`, tree$`right daughter`))
+  
+  # convert to graph and delete the last node that we don't want to plot
+  graph <- graph_from_data_frame(graph_frame) %>%
+    delete_vertices("0")
+  
+  # set node labels
+  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
+  V(graph)$leaf_label <- as.character(tree$prediction)
+  V(graph)$split <- as.character(round(tree$`split point`, digits = 2))
+  
+  # plot
+  plot <- ggraph(graph, 'dendrogram') + 
+    theme_bw() +
+    geom_edge_link() +
+    geom_node_point() +
+    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
+    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
+    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, 
+					repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          plot.background = element_rect(fill = "white"),
+          panel.border = element_blank(),
+          axis.line = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(size = 18))
+  
+  print(plot)
+}
+
+#v. Train Random Forest
+set.seed(344)
+
+cancerfile <- read.csv("data.csv")
+cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
+cancerfile$X <- NULL
+cancer_corr <- cor(cancerfile %>% select(-id, -diagnosis))
+cancerfile2 <- cancerfile %>% select(-findCorrelation(cancer_corr, cutoff = 0.9))
+
+cancerfile3 <- cbind(diagnosis = cancerfile$diagnosis, cancerfile2)
+sample_index <- createDataPartition(cancerfile3$diagnosis, times = 1, p = 0.8, list = FALSE)
+train <- cancerfile3[sample_index, ]
+test <-  cancerfile3[-sample_index, ]
+control <- trainControl(method="cv",
+                           number = 10,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary)
+
+model_rf <- train(diagnosis ~., data = train,
+                     method = "rf", 
+                     metric = 'ROC', 
+                     trControl = control)
+
+prediction_rf <- predict(model_rf, test)
+
+tree_num <- which(model_rf$finalModel$forest$ndbigtree == min(model_rf$finalModel$forest$ndbigtree))
+
+tree_func(final_model = model_rf$finalModel, tree_num)
+```
+
+
+
+```{r}
+#vi. Boosting
+
+train.gbm <- train(diagnosis ~ ., 
+                   data=trainingData,
+                   method="gbm",
+                   verbose=F,
+                   )
+
+gbm.classTest <-  predict(train.gbm, 
+                         newdata = testData,
+type="raw")
+summary(train.gbm)
+```
+```{r}
+gbmImp <- varImp(train.gbm, scale = FALSE)
+varImpPlot(train.gbm)
+```
