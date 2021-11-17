@@ -1,471 +1,304 @@
 ---
-title: "Final Project Report"
+title: "Wisconsin Breast Cancer Data"
 author: "Jonathan Monteiro"
-date: "05/09/2020"
-output: html_document
+date: "11/30/2020"
+output:
+  html_document: default
+  pdf_document: default
 ---
 
-```{r}
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+```{r, message=FALSE,warning=FALSE}
 #Load libraries and data from csv file
 
-library(readr)
 library(GGally)
 library(ggplot2)
-library(readr)
-library(MASS)
-library(corrplot)
-library(factoextra)
-library('e1071')
-library(leaps)
-library(tidyverse)
 library(caret)
-library(glmnet)
 library(plyr)
+library(ROCR)
+library(pander)
 library(dplyr)
-library(repr)
-library(plsdepot)
-library('splines')
-library(gam)
-```
+library('ggpubr')
+library("naniar")
+library('verification')
 
-```{r}
-#Reshape data prior to analysis
+# Read the dataset and store it within a variable
 
 cancerfile <- read.csv("data.csv")
-cancerfile$diagnosis <-ifelse(cancerfile$diagnosis=='M',1,0)
+
+# Convert the outcome variable into a factor variable
+
 cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
+
+# Remove unhelpful columns prior to analysis
+
 cancerfile$X <- NULL
 cancerfile$id <- NULL
-cancerfile$diagnosis <- NULL
 ```
 
-```{r}
-#Split data into training and testing sets for ML models
+# Introduction 
 
-set.seed(344)
+The goal of this project was to create a model that could accurately diagnose a possibly cancerous breast mass, as well as see which variables were most significant within such a model. The model would aim to classify breast masses as either "Benign" or "Malignant." "Benign" tumors are tumors that are non-cancerous, slow growing and non-invasive. Benign tumors are typically smaller and have a well-defined shape. "Malignant" tumors are tumors that are cancerous, fast growing and spread to other parts of the body. They are typically larger, and have an uneven or irregular shape. These physical characteristics assist doctors in diagnosing tumors correctly, and would potentially help a statistical model as well. 
 
-trainingRowIndex <- sample(1:nrow(cancerfile), 0.8*nrow(cancerfile))
-trainingData <- cancerfile[trainingRowIndex, ] 
-testData  <- cancerfile[-trainingRowIndex, ]  
-```
+Breast cancer is one of the most devastating diseases that we currently face in modern day society. Women are especially the victims of this disease. Breast cancer is the most common cancer in American women, only behind skin cancers. 1 in 8 women in the United States will develop breast cancer in their lifetime. On average, every 2 minutes a woman is diagnosed with breast cancer in the US. Unfortunate facts like these can serve as motivation to create new approaches in effectively diagnosing breast masses as either benign or malignant. Many of the approaches that can be used revolve around machine learning and statistical models.
 
-```{r}
-## No high leverage or missing points were found within the data set.
-```
+# The Data
 
-```{r}
-## i. Standard linear model.
-
-linearmodel <- lm(radius_mean ~ perimeter_mean + smoothness_mean , data=trainingData)
-
-plot(linearmodel)
-summary(linearmodel) 
-
-mean((testData$radius_mean - predict(linearmodel,testData))^2)
-mean((trainingData$radius_mean - predict(linearmodel,trainingData))^2)
-```
+For this project, I was given the "Wisconsin Breast Cancer" dataset. The data focuses on digitized images of a fine needle aspirate of a breast mass and was collected by the University of California Irvine. In total, there were 569 observations of breast masses. Additionally, the dataset contained ten physical characteristics of each breast mass. These ten physical characteristics were the mass' radius, texture, perimeter, area, smoothness, compactness, concavity, concave points, and symmetry. For each of these characteristics, three features were computed. The features included the characteristics' mean, standard error and the mean of the three largest values of that tumor. For ten characteristics with three features each, this led to 30 total independent variables. 
 
 
 ```{r}
-#ii. Best subset selection
-set.seed(344)
+# Preview the first six rows of the dataset
 
-num_vars = ncol(trainingData) - 1
-
-trn_idx = sample(c(TRUE, FALSE), nrow(cancerfile), rep = TRUE)
-tst_idx = (!trn_idx)
-
-fit_all = regsubsets(radius_mean ~ ., data = cancerfile[trn_idx, ], nvmax = num_vars)
-
-test_mat = model.matrix(radius_mean ~ ., data = cancerfile[tst_idx, ])
-
-test_err = rep(0, times = num_vars)
-for (i in seq_along(test_err)) {
-  coefs = coef(fit_all, id = i)
-  pred = test_mat[, names(coefs)] %*% coefs
-  test_err[i] <- sqrt(mean((cancerfile$radius_mean[tst_idx] - pred) ^ 2))
-}
-coef(fit_all, 17)
-
-which.min(test_err)
-
-plot(test_err, type='b', ylab = "Test Set RMSE", xlab = "Number of Predictors")
-
+head(cancerfile[,1:5]) %>% pander
 ```
 
-```{r}
+<center>
+Figure 1: A preview of the "Wisconsin Breast Cancer" dataset
 
-#iii. Lasso. 
-
-eval_results <- function(true, predicted, df) {
-  SSE <- sum((predicted - true)^2)
-  SST <- sum((true - mean(true))^2)
-  R_square <- 1 - SSE / SST
-  RMSE = sqrt(SSE/nrow(df))
-    # Model performance metrics
-data.frame(
-  RMSE = RMSE,
-  Rsquare = R_square
-)
-  
-}
-set.seed(344)
-cancerfile <- read.csv("data.csv")
-#Reshape data prior to analysis
-
-cancerfile$diagnosis <- NULL
-cancerfile$X <- NULL
-cancerfile$id <- NULL
-
-x = model.matrix(radius_mean~., cancerfile)[,-1] 
-                                         
-y <- cancerfile %>%
-  select(radius_mean) %>%
-  unlist() %>%
-  as.numeric()
-
-grid = 10^seq(10, -2, length = 100)
-
-train = cancerfile %>%
-  sample_frac(0.5)
-
-test = cancerfile %>%
-  setdiff(train)
-
-x_train = model.matrix(radius_mean~., train)[,-1]
-x_test = model.matrix(radius_mean~., test)[,-1]
-
-y_train = train %>%
-  select(radius_mean) %>%
-  unlist() %>%
-  as.numeric()
-
-y_test = test %>%
-  select(radius_mean) %>%
-  unlist() %>%
-  as.numeric()
-
-
-lasso_mod = glmnet(x_train, 
-                   y_train, 
-                   alpha = 1, 
-                   lambda = grid)
-
-cv.lasso = cv.glmnet(x_train, y_train, alpha = 1) 
-
-# Plot training data MSE as function of lambda
-
-best.lam = cv.lasso$lambda.min
-
-lasso.coef  <- predict(lasso_mod, type = 'coefficients', s = best.lam)[1:29,]
  
-lasso.coef
-
-lasso_pred = predict(lasso_mod, s = best.lam, newx = x_test) 
-(eval_results(y_test, lasso_pred, testData)$RMSE)^2
-```
-
 ```{r}
-#iv. Partial Least Squares
+# Summarize each of the variables with descriptive statistics
 
-set.seed(344)
-cancerfile <- read.csv("data.csv")
-cancerfile$diagnosis <-ifelse(cancerfile$diagnosis=='M',1,0)
-cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
-cancerfile$X <- NULL
-cancerfile$id <- NULL
-cancerfile$diagnosis <- NULL
-
-trainingRowIndex <- sample(1:nrow(cancerfile), 0.8*nrow(cancerfile))
-trainingData <- cancerfile[trainingRowIndex, ] 
-testData  <- cancerfile[-trainingRowIndex, ]  
-
-
-cv_model_pls <- train(
-  radius_mean ~ ., 
-  data = trainingData, 
-  method = "pls",
-  preProcess = c("zv", "center", "scale"),
-  tuneLength = 30
-)
+summary(cancerfile) 
 ```
 
+
+<center>
+Figure 2: Descriptive statistics for each of the variables within the dataset
+
+
+
+## Cleaning and Transforming Data 
+
+Prior to analysis, it is necessary to inspect the data to find abnormalities, missing values, unnecessary columns etc. Any such instances can negatively effect the model's predictions and overall performance. 
+
+```{r, echo=FALSE, results='hide'}
+
+# A function from the 'naniar' library that can detect whether or not missing data is present within the entire datset.
+
+any_na(cancerfile)
+
+# The function returns 'FALSE', meaning no instances of missing data were detected
+```
+
+No instances of missing data were located within the dataset. The "id" and the "X" columns were removed as neither columns would provide any insight. Lastly, the dependent variable was transformed into a factor variable prior to analysis. 
+
+# Exploratory Data Analysis
+
+
+Exploratory data analysis is a crucial method that can assist with observing the characteristics of a dataset, discovering its patterns, and identifying potential relationships. Several visualizations were utilized in order to better understand the dataset prior to the model building process.
+
+
+<center>
 ```{r}
-cv_model_pls$results %>%
-  dplyr::filter(ncomp == pull(cv_model_pls$bestTune))
+ggplot(cancerfile, aes(diagnosis))+
+  geom_bar(fill = "#0073C2FF") + 
+  labs(
+        x = "Diagnosis",
+        y = "Count",
+        title = "Frequency of Each Diagnosis")
 ```
+<center>
+Figure 3: Frequency of benign and malignant breast masses in dataset
 
-```{r}
-#v. Polynomial
 
-fit <- lm(radius_mean∼poly(radius_mean+smoothness_mean ,3), data=trainingData)
+Of the 569 breast masses within the data, 357 are 'benign' and 212 are 'malignant'. This means 62.7% of the breast masses are benign while the remaining 37.3% are malignant.  
 
-coef(fit)
-
-mean((testData$radius_mean - predict(fit,testData))^2)
-
-plot(fit)
-```
-
-```{r}
-#vi. Natural cubic spline (either state the degree of freedom or knots.) (Chapter 7)
-
-p.range <- range(cancerfile$perimeter_mean)
-p.grid=seq(from=p.range[1],to=p.range[2])
-
-naturalfit <- lm(radius_mean ~ bs(perimeter_mean, knots = c(75, 120, 160)), data=cancerfile)
-
-coef(naturalfit)
-
-mean((testData$radius_mean - predict(naturalfit,testData))^2)
-
-plot(cancerfile$perimeter_mean,cancerfile$radius_mean,col="grey",xlab="Perimeter Mean",ylab="Radius Mean")
-points(p.range, predict(naturalfit,newdata = list(perimeter_mean=p.range)),col="darkgreen",lwd=2,type="l")
-#adding cutpoints
-abline(v=c(75,120, 160),lty=2,col="darkgreen")
-```
+As mentioned previously, one of the key differences between benign and malignant skin masses is their size. The below visualization supports this point, as increases in the radius mean and concavity mean lead to more cases of malignant skin masses. 
 
 
 ```{r}
-#Smooth Spline 
-
-
-naturalfit2<-smooth.spline(cancerfile$perimeter_mean, cancerfile$radius_mean,df=8) 
-
-predict(naturalfit2,testData)
-
-plot(cancerfile$perimeter_mean, cancerfile$radius_mean,col="grey",xlab="Perimeter Mean",ylab="Radius Mean")
-points(p.range,predict(naturalfit,newdata = list(perimeter_mean=p.range)),col="darkgreen",lwd=2,type="l")
-
-
-abline(v=c(75,120, 160),lty=2,col="darkgreen")
-lines(naturalfit2,col="red",lwd=2)
-
-lines(p.grid,predict (loefit,data.frame(perimeter_mean=p.grid)), col="red",lwd=2) 
-
-lines(p.grid ,predict (loefit2,data.frame(perimeter_mean=p.grid)), col="blue",lwd=2) 
-
-
+ggplot(cancerfile, aes(x = radius_mean, y = concavity_mean)) +
+    geom_point(aes(color = diagnosis)) +
+  
+  labs(
+        x = "Radius Mean",
+        y = "Concavity Mean",
+        color = "Diagnosis",
+        title = "Relation between Radius Mean and Concavity Mean",
+        subtitle = "Separated by cancer diagnosis"
+            )
 ```
 
+<center>
+Figure 4: Relation between radius mean and concavity mean; separated by cancer diagnosis
+
+
+This pattern appears consistent when observing the other 'mean' variables and their relationship with the diagnosis variable. 
+
+<center>
+```{r, message=FALSE}
+ggpairs(cancerfile[,c(2:11,1)], aes(color=diagnosis))
+```
+
+
+Figure 3: A plot showcasing correlation of the "means" section of dataset; separated by diagnosis
+
+
+## Analyzing Correlations 
+
+In order to create the best possible model, the independent variables were observed in order to locate instances of multicollinearity. This refers to high correlation amongst the independent variables to one another. Multicollinearity can lead to several issues such as over complexity and poor results. Ideally, a simpler model is preferred in order to avoid such issues. The previous figure was a beneficial plot for discovering such instances. As such, the figure was used for the 'standard error' and 'worst' sections of the dataset as well. The figures can be seen below.
+
+```{r, message=FALSE}
+ggpairs(cancerfile[,c(12:21,1)], aes(color=diagnosis))
+```
+
+<center>
+Figure 4: A plot showcasing correlation of the "standard error" section of dataset
+
+
+```{r, message=FALSE}
+ggpairs(cancerfile[,c(22:31,1)], aes(color=diagnosis))
+```
+
+<center>
+Figure 4: A plot showcasing correlation of the "worst" section of dataset
+
+# Variable Removal
+
+By quickly examining the plot, several examples of multicollinearity can be observed. For example, between the radius, area and perimeter variables. These variable consistently showcase high correlation among one another, which is understandable considering how radius, perimeter and area are calculated. Although this was immediately noticeable by observing the figures above, visually observing the pair-wise correlations of the 30 independent variables would be time consuming. Instead, each of the pair-wise correlations were calculated and columns were chosen to be removed based upon a chosen correlation cutoff value.  The correlation cutoff was set to 0.8 and variables were removed as such. 
 
 ```{r}
-#viii. Local Regression. (Chapter 7)
+# The pair-wise correlations were calculated and stored within the 'correlations' variable
 
-plot(cancerfile$perimeter_mean, cancerfile$radius_mean,xlim=p.range ,cex=.5,col="darkgrey ",xlab="Perimeter Mean", ylab = "Radius Mean") 
-title("Local Regression ") 
+correlations = cor(cancerfile[,2:31])
 
-summary(loefit)
+# Columns were then chosen to be removed based on whether or not they met the correlation cutoff value of 0.8
 
-loefit=loess(radius_mean∼perimeter_mean,span=.2,data=cancerfile) 
+removedcols = findCorrelation(correlations, cutoff = 0.8, names = T)
 
-loefit2=loess(radius_mean∼perimeter_mean,span=.5,data=cancerfile) 
+# The chosen column names can be seen below
 
-lines(p.grid,predict (loefit,data.frame(perimeter_mean=p.grid)), col="red",lwd=2) 
+removedcols
 
-lines(p.grid ,predict (loefit2,data.frame(perimeter_mean=p.grid)), col="blue",lwd=2) 
+# The columns were officially removed from the datset prior to analysis
+
+cancerfile = cancerfile[, -which(colnames(cancerfile) %in% removedcols)]
 ```
 
-```{r}
-#ix. Generalized Additive Model. (Chapter 7)
+## Partitioning the Data 
 
-gam.m1 =gam(radius_mean∼s(perimeter_mean,4)+s(smoothness_mean,5)+fractal_dimension_se,data=cancerfile)
-gam.m2 =gam(radius_mean∼perimeter_mean+s(smoothness_mean,5)+fractal_dimension_se,data=cancerfile)
-gam.m3 =gam(radius_mean∼s(perimeter_mean,5)+smoothness_mean,data=cancerfile)
-gam.m4 =gam(radius_mean∼s(perimeter_mean,4)+s(smoothness_mean,5),data=cancerfile)
+Prior to the model building process, the data was partitioned into a training and test set. A training set would be used to train the model and the testing set would be used to evaluate the model's performance.
 
-gam.m3
-predictions <- gam.m3 %>% predict(testData)
 
-plot(gam.m3, se=TRUE , col="green")
-RMSE = RMSE(predictions, testData$radius_mean)
-RMSE^2
+```{r, echo=FALSE}
+set.seed(43)
+
+# Rows were selected for the training and test datasets
+sample_index <- createDataPartition(cancerfile$diagnosis, times = 1, p = 0.75, list = FALSE)
+train <- cancerfile[sample_index, ]
+test <-  cancerfile[-sample_index, ]
 ```
 
-#Qualitative
+# Model Building
+
+As mentioned previously, we are attempting to predict whether a breast mass is malignant or benign based on its physical characteristics. This would be a classic case of a classification problem. Classification problems require specific statistical models. The statistical model we will use for this problem will be logistic regression. At first, the logistic regression model will be trained using each of the independent variables left within the dataset.
+
+# Model #1: All Variables 
 
 ```{r, warning=FALSE}
-cancerfile <- read.csv("data.csv")
-cancerfile$diagnosis <-ifelse(cancerfile$diagnosis=='M',1,0)
-cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
-cancerfile$X <- NULL
-cancerfile$id <- NULL
+# Fit model #1 with all of the indepedent variables present within the dataset
+
+fullmodel <- glm(diagnosis ~ ., data = train, family="binomial")
+summary(fullmodel)
+```
+Using a significance level of 0.05, the output suggests area_mean, radius_se, texture_se, fractal_dimension_se, texture_ worst and smoothness_worst are all statistically significant variables. For the full model, an AIC of 65.98 was calculated. This will be helpful for model comparison. Observing the null deviance and residual deviance can assist in determining the goodness of fit of a model. With this model, the null deviance of 563.81 and residual deviance of 35.98 shows a significant decrease in deviance. The model appears to explain the data very well.
+
+Analyzing how the model performs with the test dataset is crucial to performance evaluation. The performance of classification models can be gauged through the use of an ROC plot. An ROC is a probability curve and the ROC curve is plotted with true positive rate against the false positive rate. The true positive rate refers to how many cases were correctly classified as "positive" and the false positive rate refers to how many were incorrectly classified as "positive." For the plot, the TPR is on y-axis and FPR is on the x-axis. Typically, one would want a high TPR and a low FPR. The area underneath the curve, also called the AUC, represents how well the model is able to distinguish between the classes within the problem. In this case, it refers to how well the model can classify malignant and benign breast masses. An ROC plot can be seen below. 
+
+```{r, echo=FALSE}
+
+# The model is used to make predictions and it's performance is compared with the true answers within the test dataset
+
+fullprediction_lr <- predict(fullmodel, test, type="response")
+fullpred <- prediction(fullprediction_lr, test$diagnosis)
+fullperf <- performance(fullpred,"tpr","fpr")
+
+# The ROC is visualized and the AUC is calculated
+
+fullauc_ROCR <- performance(fullpred, measure = "auc")
+fullauc_ROCR <- fullauc_ROCR@y.values[[1]]
+
+
+plot(fullperf)
 ```
 
 ```{r}
-#Split data into training and testing sets for ML models
-
-set.seed(344)
-
-trainingRowIndex <- sample(1:nrow(cancerfile), 0.8*nrow(cancerfile))
-trainingData <- cancerfile[trainingRowIndex, ] 
-testData  <- cancerfile[-trainingRowIndex, ] 
-
+print(paste("Model #1 AUC: ",round(fullauc_ROCR,4))) 
 ```
+
+Model #1 has an AUC of 0.9816. This showcases exceptional predictive ability as it is very close to 1. Overall, results for model #1 are promising but the model's performance will be compared to two other models as well. 
+
+
+# Model #2: Manual Selection 
+
+The next model was more strict in the variable selection process. For this method, the output of model #1 was observed and variables that were under a significance value of 0.25 were removed from the model. This process was repeated until the model contained solely statistically significant variables. 
+
+From observing the output of model #1, the variables area_mean, concavity_se, concave.points_se, radius_se, texture_se, fractal_dimension_se, texture_ worst and smoothness_worst can be retained after the first step in the selection process. However, after further evaluation, the concave.points_se and fractal_dimension_se variables were removed from the model as well. The final model #2 results can be seen below.
+ 
+```{r, warning=FALSE,message=FALSE, echo=FALSE}
+manualmodel <- glm(diagnosis ~ area_mean + concavity_se + radius_se + texture_se + texture_worst + smoothness_worst, data = train, family="binomial")
+summary(manualmodel)
+```
+As you can see, all variables retained within this model are statistically significant. In the end, only 6 of the 14 variables from the full model were retained. This resulted in a simpler model with more degrees of freedom. The AIC for model #2 was 80.387, which is higher than the previous model. 
+
+```{r, echo=FALSE}
+manualprediction_lr <- predict(manualmodel, test, type="response")
+manualpred <- prediction(manualprediction_lr, test$diagnosis)
+manualperf <- performance(manualpred,"tpr","fpr")
+
+manualauc_ROCR <- performance(manualpred, measure = "auc")
+manualauc_ROCR <- manualauc_ROCR@y.values[[1]]
+
+plot(manualperf)
+```
+
+```{r}
+print(paste("Model #2 AUC: ",round(manualauc_ROCR,4))) 
+```
+When evaluating the model's performance on the test data, we can see that model #2 performs better, having an AUC of 0.9875. This is impressive given that the model is significantly simpler in terms of independent variables present within the model.
+
+# Model #3: Forward Stepwise AIC
+
+The last model was created by utilizing "Forward Stepwise AIC" for the variable selection process. This method started with the null model and continually added the next most significant variable to the model. The end model was ultimately determined based upon the model's AIC value.  
 
 ```{r, warning=FALSE}
-#i. Logistic Regression
-set.seed(344)
+# Create the null model
 
-logisticmod <- glm(diagnosis ~ radius_mean + perimeter_mean + area_se + compactness_se + concave.points_se + radius_worst + texture_worst + concavity_worst + fractal_dimension_worst, family=binomial,data=trainingData,maxit = 100)
+null <- glm(diagnosis ~ 1, family = binomial, train)
 
-summary(logisticmod)
+# Perform Forward Stepwise AIC selection
 
-log_prediction <- predict(logisticmod,testData,type="response")
+stepwisemodel <- step(null, scope=list(lower=null, upper=fullmodel), k = 2, direction="forward", trace=FALSE)
 
-t <- table(testData$diagnosis,log_prediction>0.2,dnn = c('Logistic',' '))
- 
-boot::cv.glm(trainingData, logisticmod, K = 10)$delta[1]
-
-```
-```{r}
-t[4]/(t[3]+t[4])
-t[2]/(t[1]+t[2])
-t[1]/(t[1]+t[2])
-t[3]/(t[3]+t[4])
+summary(stepwisemodel)
 ```
 
-```{r}
-#ii. Train linear discriminant model
+After using Forward Stepwise AIC selection, 9 of the 14 variables remained from the full model. Most of the variables within the model are statistically signicant when using a significance level of 0.05. The only variable that is not statistically significant in this case would be fractal_dimension_worst. This model has the lowest AIC of the three models, with an AIC of 59.13. Given the method chosen to select this particular model, this is understandable.
 
-discriminantmod <- lda(diagnosis ~ concave.points_worst + concavity_mean + concavity_worst + perimeter_worst + area_worst, data=trainingData)
+```{r, echo=FALSE}
+stepprediction_lr <- predict(stepwisemodel, test, type="response")
+steppred <- prediction(stepprediction_lr, test$diagnosis)
+stepperf <- performance(steppred,"tpr","fpr")
 
-lda_prediction <- predict(discriminantmod,testData)$class
+stepauc_ROCR <- performance(steppred, measure = "auc")
+stepauc_ROCR <- stepauc_ROCR@y.values[[1]]
 
-t <- table(lda_prediction,testData$diagnosis)
-
-lda.pred = predict(discriminantmod, testData)
-mean(lda.pred$class != testData$diagnosis)
+plot(stepperf)
 ```
-
-```{r}
-#iii. Quadratic Discriminant Analysis
-cancer.qda <- qda(diagnosis ~., data = trainingData)
-
-cancer.pred <- predict(cancer.qda, testData)$class
-t <- table(cancer.pred, testData$diagnosis, dnn = c('QDA Prediction',' '))
-
-qda.pred = predict(cancer.qda, testData)
-mean(qda.pred$class != testData$diagnosis)
-```
-
-```{r}
-#iv. Bagging
-
-Bag <- randomForest(diagnosis~.,data=trainingData,mtry=13,importance=TRUE)
-
-f <- varImpPlot(Bag)
-f
-```
-
-```{r}
-bagg.classTest <-  predict(train.bagg, 
-                         newdata = testData,
-                          type="raw")
-confusionMatrix(testData$diagnosis,bagg.classTest,dnn=c("Bagging",""))
-```
-
-```{r}
-library(dplyr)
-library('ggraph')
-library('igraph')
-
-tree_func <- function(final_model, 
-                      tree_num) {
-  
-  # get tree by index
-  tree <- randomForest::getTree(final_model, 
-                                k = tree_num, 
-                                labelVar = TRUE) %>%
-    tibble::rownames_to_column() %>%
-    # make leaf split points to NA, so the 0s won't get plotted
-    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
-  
-  # prepare data frame for graph
-  graph_frame <- data.frame(from = rep(tree$rowname, 2),
-                            to = c(tree$`left daughter`, tree$`right daughter`))
-  
-  # convert to graph and delete the last node that we don't want to plot
-  graph <- graph_from_data_frame(graph_frame) %>%
-    delete_vertices("0")
-  
-  # set node labels
-  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
-  V(graph)$leaf_label <- as.character(tree$prediction)
-  V(graph)$split <- as.character(round(tree$`split point`, digits = 2))
-  
-  # plot
-  plot <- ggraph(graph, 'dendrogram') + 
-    theme_bw() +
-    geom_edge_link() +
-    geom_node_point() +
-    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
-    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
-    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, 
-					repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
-    theme(panel.grid.minor = element_blank(),
-          panel.grid.major = element_blank(),
-          panel.background = element_blank(),
-          plot.background = element_rect(fill = "white"),
-          panel.border = element_blank(),
-          axis.line = element_blank(),
-          axis.text.x = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks = element_blank(),
-          axis.title.x = element_blank(),
-          axis.title.y = element_blank(),
-          plot.title = element_text(size = 18))
-  
-  print(plot)
-}
-
-#v. Train Random Forest
-set.seed(344)
-
-cancerfile <- read.csv("data.csv")
-cancerfile$diagnosis <- as.factor(cancerfile$diagnosis)
-cancerfile$X <- NULL
-cancer_corr <- cor(cancerfile %>% select(-id, -diagnosis))
-cancerfile2 <- cancerfile %>% select(-findCorrelation(cancer_corr, cutoff = 0.9))
-
-cancerfile3 <- cbind(diagnosis = cancerfile$diagnosis, cancerfile2)
-sample_index <- createDataPartition(cancerfile3$diagnosis, times = 1, p = 0.8, list = FALSE)
-train <- cancerfile3[sample_index, ]
-test <-  cancerfile3[-sample_index, ]
-control <- trainControl(method="cv",
-                           number = 10,
-                           classProbs = TRUE,
-                           summaryFunction = twoClassSummary)
-
-model_rf <- train(diagnosis ~., data = train,
-                     method = "rf", 
-                     metric = 'ROC', 
-                     trControl = control)
-
-prediction_rf <- predict(model_rf, test)
-
-tree_num <- which(model_rf$finalModel$forest$ndbigtree == min(model_rf$finalModel$forest$ndbigtree))
-
-tree_func(final_model = model_rf$finalModel, tree_num)
-```
-
 
 
 ```{r}
-#vi. Boosting
-
-train.gbm <- train(diagnosis ~ ., 
-                   data=trainingData,
-                   method="gbm",
-                   verbose=F,
-                   )
-
-gbm.classTest <-  predict(train.gbm, 
-                         newdata = testData,
-type="raw")
-summary(train.gbm)
+print(paste("Model #3 AUC: ",round(stepauc_ROCR,4))) 
 ```
-```{r}
-gbmImp <- varImp(train.gbm, scale = FALSE)
-varImpPlot(train.gbm)
-```
+
+When evaluated using the test data, model #3 had an AUC of 0.986. Of the three models, this is the second highest calculated AUC.
+
+
+# Conclusion
+
+Overall, the results indicated that this report was an overall success. The dataset featured a robust assortment of independent variables to use in predicting the dependent variable, cancer diagnosis. This problem was a classic case of a classification problem. For that, I decided to use the most commonly used statistical model for classification problems, logistic regression. Three different models were evaluated for their overall performance. The three models were the Full Model, Maual Selection Model and the Forward Stepwise AIC mode.For evaluation, the AIC values were observed, a ROC plot was visualized and an AUC was calculated to determine the model's performance. Of the three models, the Manual Selection Model had the highest calculated AUC (0.9875) when evaluated with the test data set. This model was followed by the Forward Stepwise AIC model, (0.986) and the Full Model (0.9816). In terms of AIC, the model with the lowest AIC was the Forward Stepwise AIC model with an AIC of 59.13. This model was followed by the Full Model (65.98) and the Manual Selection model (80.387). After looking at the results, it is impressive that the Manual Selection Model was the least complex model with only 6 variables, however it was able to outperform the other models in some areas given the Full Model had 14 variables and the Forward Stepwise AIC model had 9. With this in mind, I am of the opinion that the Manual Selection Model had the most optimal performance. However, all 3 models appeared to have performed exceptionally well with this particular dataset and the end results exceeded expectations. 
